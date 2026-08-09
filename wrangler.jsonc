@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "youyaku-bot",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-08",
+  "observability": {
+    "enabled": true
+  },
+  // 要約は 30 秒の壁を超えるため Cron 側で実行する。1 分が最小間隔。
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "kv_namespaces": [
+    {
+      "binding": "JOBS",
+      "id": "f0343cf7e7324466ae5d36a548093fee"
+    }
+  ],
+  "vars": {
+    // 変更したい場合のみ上書き。secret ではないのでここに書いてよい。
+    "GEMINI_MODEL": "gemini-3.6-flash"
+  }
+  // secrets（wrangler secret put で登録、ここには書かない）:
+  //   DISCORD_PUBLIC_KEY
+  //   GEMINI_API_KEY
+}

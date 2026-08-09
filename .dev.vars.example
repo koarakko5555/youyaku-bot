@@ -1,0 +1,13 @@
+# .dev.vars にコピーして値を入れる（.gitignore 済み）。
+# wrangler dev がローカル実行時に読み込み、scripts/register.mjs も参照する。
+# 本番の Worker には `wrangler secret put <NAME>` で登録すること。
+
+# --- Worker 実行に必要 ---
+DISCORD_PUBLIC_KEY=
+GEMINI_API_KEY=
+
+# --- スラッシュコマンド登録(npm run register)にのみ必要。Worker 側では使わない ---
+DISCORD_APPLICATION_ID=
+DISCORD_BOT_TOKEN=
+# 開発サーバーに即時反映したい場合のみ指定。空ならグローバル登録（反映に最大1時間）。
+DISCORD_GUILD_ID=
