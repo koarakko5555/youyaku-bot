@@ -18,12 +18,24 @@ import {
   type SummaryJob,
 } from "./jobs.ts";
 import { DAILY_LIMIT_SECONDS, addUsage, readQuota } from "./quota.ts";
-import { formatSeconds, parseTimecode, validateClip, type ClipRange } from "./timecode.ts";
-import { fetchVideoInfo, normalizeYouTubeUrl } from "./youtube.ts";
+import {
+  exceedsLimit,
+  formatSeconds,
+  parseTimecode,
+  validateClip,
+  type ClipRange,
+} from "./timecode.ts";
+import { fetchVideoDuration, fetchVideoInfo, normalizeYouTubeUrl } from "./youtube.ts";
 
 export interface Env {
   DISCORD_PUBLIC_KEY: string;
   GEMINI_API_KEY: string;
+  /**
+   * 尺と配信状態の確認に使う。未指定なら GEMINI_API_KEY を流用するが、
+   * キーの属するプロジェクトで YouTube Data API v3 を有効化していないと 401 で弾かれる。
+   * その場合は尺を確認せずそのまま要約する。
+   */
+  YOUTUBE_API_KEY?: string;
   GEMINI_MODEL?: string;
   JOBS: KVNamespace;
 }
@@ -44,6 +56,12 @@ const MAX_GEMINI_MS = 8 * 60 * 1000;
  * 区間を指定しなかった場合に、消費した動画の長さを逆算するのに使う。
  */
 const TOKENS_PER_VIDEO_SECOND = 91;
+
+/**
+ * 尺の確認に許す時間。
+ * この処理は 3 秒の ACK 期限の内側で走るため、API が詰まっても間に合うよう短く切る。
+ */
+const DURATION_LOOKUP_TIMEOUT_MS = 1500;
 
 /** embed の左側の帯の色。赤はエラー表示に見えるため Discord 標準のブラープルにしている。 */
 const EMBED_COLOR = 0x5865f2;
@@ -84,7 +102,7 @@ const SUMMARY_MODAL = {
     {
       type: ComponentType.LABEL,
       label: "終了時刻（任意）",
-      description: "省略すると動画の最後まで。区間は最大3時間",
+      description: "省略すると動画の最後まで。区間は最大1時間",
       component: {
         type: ComponentType.TEXT_INPUT,
         custom_id: "to",
@@ -138,6 +156,10 @@ export default {
 
     const clip = buildClip(getModalValue(interaction, "from"), getModalValue(interaction, "to"));
     if (typeof clip === "string") return rejection(clip);
+
+    // Gemini にトークンを使わせる前に、配信中と長すぎる動画をここで落とす。
+    const lengthProblem = await checkLength(url, clip, env);
+    if (lengthProblem) return rejection(lengthProblem);
 
     const job: SummaryJob = {
       url,
@@ -283,6 +305,48 @@ async function describeQuota(kv: KVNamespace): Promise<string> {
     "",
     "-# この数値は Bot 側の集計です。Google の実カウントとは差が出ることがあります。",
   ].join("\n");
+}
+
+/**
+ * 要約の対象になる長さを、Gemini を叩く前に検証する。問題があればエラー文言を返す。
+ *
+ * 区間の両端が指定されていれば長さは validateClip で確定しているが、配信中かどうかは
+ * 入力からは判断できないため、いずれの場合も Data API を引く。
+ * 取得できなかった場合（キーが通らない、API が落ちている等）は判断材料が無いので通す。
+ * 既存の oEmbed 取得と同じく、外部要因でユーザーの操作を止めない方針に揃えている。
+ */
+async function checkLength(
+  url: string,
+  clip: ClipRange | undefined,
+  env: Env,
+): Promise<string | null> {
+  const duration = await fetchVideoDuration(
+    url,
+    env.YOUTUBE_API_KEY ?? env.GEMINI_API_KEY,
+    AbortSignal.timeout(DURATION_LOOKUP_TIMEOUT_MS),
+  );
+  if (!duration) return null;
+
+  if (duration.live) {
+    return "配信中またはプレミア公開の予約状態の動画は要約できません。配信が終わってから実行してください。";
+  }
+
+  // 両端の指定があればその区間、無ければ開始時刻から動画の最後までが対象になる。
+  const target =
+    clip?.endSeconds !== undefined
+      ? clip.endSeconds - clip.startSeconds
+      : duration.seconds - (clip?.startSeconds ?? 0);
+
+  if (target <= 0) {
+    return `開始時刻が動画の長さ（${formatSeconds(duration.seconds)}）を超えています。`;
+  }
+  if (exceedsLimit(target)) {
+    return [
+      `要約の対象が ${formatSeconds(target)} あります。一度に要約できるのは1時間までです。`,
+      "開始時刻と終了時刻で1時間以内の区間を指定してください。",
+    ].join("\n");
+  }
+  return null;
 }
 
 /** 本人にだけ見える即時エラー応答。ジョブは積まない。 */

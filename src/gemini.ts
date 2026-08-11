@@ -271,7 +271,7 @@ function mapErrorMessage(status: number, detail: string, perDay = false): string
         ].join("\n");
   }
   if (/token|context|too long|exceed/i.test(detail)) {
-    return "動画が長すぎて一度に処理できません。`from` と `to` で3時間以内の区間を指定してください。";
+    return "動画が長すぎて一度に処理できません。開始時刻と終了時刻で1時間以内の区間を指定してください。";
   }
   if (status === 400 && /video|youtube|unsupported|fetch/i.test(detail)) {
     return "この動画を処理できませんでした。限定公開・非公開の動画は対象外です。";

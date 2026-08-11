@@ -13,7 +13,10 @@ Discord から YouTube 動画を要約する Bot。Cloudflare Workers 上で動�
 | --- | --- | --- |
 | 動画のURL | ✅ | `https://www.youtube.com/watch?v=...` |
 | 開始時刻 | | 省略で先頭から。`0:00` `1:23:45` `90m` `5400s` |
-| 終了時刻 | | 省略で最後まで。区間は最大3時間 |
+| 終了時刻 | | 省略で最後まで。区間は最大1時間 |
+
+要約の対象が1時間を超える場合と、配信中・プレミア公開の予約状態の動画は、
+**Gemini を呼ぶ前に弾く**（本人にのみ表示）。1時間を超える動画は区間を指定すれば要約できる。
 
 `/quota` で無料枠の残りとリセット時刻を確認できる（本人にのみ表示）。
 
@@ -25,8 +28,10 @@ Discord から YouTube 動画を要約する Bot。Cloudflare Workers 上で動�
 ```
 Discord ──(HTTP Interactions)──▶ Workers fetch()
                                     │ ① Ed25519 署名検証
-                                    │ ② モーダルを開く / 送信を受けて KV に積む
-                                    │ ③ 3秒以内に ACK →「🔄 受け付けました」
+                                    │ ② モーダルを開く
+                                    │ ③ 尺と配信状態を確認（YouTube Data API）
+                                    │ ④ 送信を受けて KV に積む
+                                    │ ⑤ 3秒以内に ACK →「🔄 受け付けました」
                                     ▼
                                    KV
                                     ▲
@@ -75,6 +80,20 @@ Message Content Intent は不要（メッセージを読まないため）。Bot
 
 [Google AI Studio](https://aistudio.google.com/apikey) で発行する。
 
+要約前の尺チェックに YouTube Data API v3 を使う。キーが紐づく Google Cloud プロジェクトで
+この API を有効化すれば、同じキーがそのまま使える。別のキーを使う場合は `YOUTUBE_API_KEY` に入れる。
+流用できるかは次で確認できる。
+
+```bash
+curl "https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=dQw4w9WgXcQ&key=$GEMINI_API_KEY"
+```
+
+`items` が返れば流用可。`401 API keys are not supported by this API` は
+**そのプロジェクトで API が有効化されていない**という意味なので、Cloud Console で有効化する。
+
+**チェックに失敗した場合は尺を確認せずそのまま要約する**ので、設定しなくても Bot は動く。
+ただし1時間超の動画や配信中の動画を弾けなくなる。
+
 ### 3. ローカル設定
 
 ```bash
@@ -121,6 +140,10 @@ npm run deploy
 | KV 書き込み | 1,000/日 | 1 リクエストにつき数回 |
 | Gemini 動画 | 8時間/日 | 公開動画のみ |
 | Gemini 1リクエスト | 3時間 | 低解像度時。コンテキスト1Mによる制約 |
+| YouTube Data API | 10,000ユニット/日 | 尺の確認は1回1ユニット。実質無制限 |
+
+Gemini 自体は3時間まで扱えるが、待ち時間と枠の消費を抑えるため Bot 側では**1時間で打ち切っている**
+（`MAX_CLIP_SECONDS`）。ちょうど1時間の動画が数十秒はみ出すことがあるため、実際に弾くのは1時間1分から。
 
 Gemini の無料枠は**入力データが学習に利用され得る**。非公開の動画を扱う用途では有償プランを検討すること。
 
@@ -177,8 +200,8 @@ curl "http://localhost:8787/__scheduled"
 | `src/gemini.ts` | Gemini 呼び出し、プロンプト、再試行、エラー文言の変換 |
 | `src/jobs.ts` | KV を使ったジョブの積み下ろしと、失効ジョブの破棄 |
 | `src/quota.ts` | 無料枠の消費を日次で記録（Google は残量 API を出していないため自前集計） |
-| `src/timecode.ts` | `1:23:45` `90m` などの時刻解釈と区間の検証 |
-| `src/youtube.ts` | URL の正規化、タイムスタンプのリンク化、サムネイル取得 |
+| `src/timecode.ts` | `1:23:45` `90m` などの時刻解釈と区間の検証、長さの上限 |
+| `src/youtube.ts` | URL の正規化、タイムスタンプのリンク化、サムネイルと尺の取得 |
 | `src/discord.ts` | Ed25519 検証、モーダル値の読み取り、follow-up 送信、embed 分割 |
 | `scripts/register.mjs` | スラッシュコマンド登録 |
 | `scripts/measure.mjs` | 要約レイテンシの実測 |

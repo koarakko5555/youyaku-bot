@@ -1,7 +1,19 @@
 /** 動画の時刻指定（`1:23:45` `90m` `3600s` など）の解釈。 */
 
-/** 1 リクエストで扱える上限。低解像度で 3 時間（Gemini のコンテキスト長による制約）。 */
-export const MAX_CLIP_SECONDS = 3 * 60 * 60;
+/** 1 リクエストで扱える上限。Gemini の制約は 3 時間だが、待ち時間と消費を抑えて 1 時間で運用する。 */
+export const MAX_CLIP_SECONDS = 60 * 60;
+
+/**
+ * 実際に拒否する閾値。
+ * 「ちょうど1時間」を謳う動画が実測では数十秒はみ出すことがあるため、1 分の遊びを持たせる。
+ * 1時間1分ちょうどから拒否する。
+ */
+export const REJECT_SECONDS = MAX_CLIP_SECONDS + 60;
+
+/** 要約の対象になる長さが上限を超えているか。 */
+export function exceedsLimit(seconds: number): boolean {
+  return seconds >= REJECT_SECONDS;
+}
 
 const COLON = /^(?:(\d+):)?(\d{1,2}):([0-5]?\d)$/;
 const UNITS = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/;
@@ -59,8 +71,8 @@ export function validateClip(range: ClipRange): string | null {
     if (endSeconds <= startSeconds) {
       return "終了時刻は開始時刻より後にしてください。";
     }
-    if (endSeconds - startSeconds > MAX_CLIP_SECONDS) {
-      return `一度に要約できるのは3時間までです（指定は ${formatSeconds(endSeconds - startSeconds)}）。区間を分けて実行してください。`;
+    if (exceedsLimit(endSeconds - startSeconds)) {
+      return `一度に要約できるのは1時間までです（指定は ${formatSeconds(endSeconds - startSeconds)}）。区間を1時間以内にしてください。`;
     }
   }
   return null;

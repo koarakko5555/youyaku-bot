@@ -6,6 +6,13 @@
 DISCORD_PUBLIC_KEY=
 GEMINI_API_KEY=
 
+# --- 任意 ---
+# 動画の尺と配信状態の確認に使う YouTube Data API v3 のキー。
+# 未指定なら GEMINI_API_KEY を流用する（同じ Google Cloud プロジェクトで
+# YouTube Data API v3 を有効化していれば通る）。
+# 取得に失敗した場合は尺の確認をせずそのまま要約する。
+YOUTUBE_API_KEY=
+
 # --- スラッシュコマンド登録(npm run register)にのみ必要。Worker 側では使わない ---
 DISCORD_APPLICATION_ID=
 DISCORD_BOT_TOKEN=

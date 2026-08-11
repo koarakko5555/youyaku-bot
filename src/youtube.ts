@@ -70,6 +70,79 @@ export async function fetchVideoInfo(url: string, signal?: AbortSignal): Promise
   }
 }
 
+const DATA_API = "https://www.googleapis.com/youtube/v3/videos";
+
+/** ISO 8601 の期間表記。`PT1H23M45S` `PT45S` `P1DT2H`（24時間超）`P0D`（配信中）。 */
+const ISO_DURATION = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/;
+
+export function parseIsoDuration(input: string): number | null {
+  const match = input.match(ISO_DURATION);
+  if (!match) return null;
+  const [, d, h, m, s] = match;
+  return Number(d ?? 0) * 86400 + Number(h ?? 0) * 3600 + Number(m ?? 0) * 60 + Number(s ?? 0);
+}
+
+export interface VideoDuration {
+  /** 配信中、またはプレミア公開の予約状態。尺が確定しない。 */
+  live: boolean;
+  /** 動画全体の長さ（秒）。live のときは 0。 */
+  seconds: number;
+}
+
+interface VideosListResponse {
+  items?: {
+    contentDetails?: { duration?: string };
+    snippet?: { liveBroadcastContent?: string };
+  }[];
+}
+
+/**
+ * 動画の長さと配信状態を YouTube Data API v3 から得る。
+ *
+ * oEmbed は duration を返さないためこちらを使う。1 回 1 クォータユニット、
+ * 無料枠は 1 日 10,000 ユニットなので、この用途では枠を気にしなくてよい。
+ * `googleapis.com` 宛てなので、YouTube 本体と違いデータセンター IP でも弾かれない。
+ *
+ * 取得できなければ null。判断材料が無いだけなので、呼び出し側は要約を続行する。
+ */
+export async function fetchVideoDuration(
+  url: string,
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<VideoDuration | null> {
+  const id = extractVideoId(url);
+  if (!id) return null;
+
+  try {
+    const res = await fetch(
+      `${DATA_API}?part=contentDetails,snippet&id=${id}&key=${encodeURIComponent(apiKey)}`,
+      { signal },
+    );
+    if (!res.ok) {
+      // キーに YouTube Data API が有効化されていない場合はここに来る（403）。
+      console.warn(`youtube data api failed status=${res.status}`);
+      return null;
+    }
+
+    const item = ((await res.json()) as VideosListResponse).items?.[0];
+    // 非公開・削除済みの動画は items が空で返る。
+    if (!item) return null;
+
+    // 配信中は "live"、プレミア公開の予約は "upcoming"、通常の動画は "none"。
+    const broadcast = item.snippet?.liveBroadcastContent;
+    if (broadcast && broadcast !== "none") return { live: true, seconds: 0 };
+
+    const raw = item.contentDetails?.duration;
+    const seconds = raw ? parseIsoDuration(raw) : null;
+    if (seconds === null) return null;
+
+    // 配信中は duration が `P0D` で返る。上の判定を抜けた場合の保険。
+    return seconds === 0 ? { live: true, seconds: 0 } : { live: false, seconds };
+  } catch {
+    return null;
+  }
+}
+
 /** `[12:34]` `[1:02:03]` のような表記。行頭以外に現れることもある。 */
 const TIMESTAMP = /\[(\d{1,2}):([0-5]\d)(?::([0-5]\d))?\]/g;
 
