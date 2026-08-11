@@ -1,9 +1,31 @@
 # youyaku-bot
 
+[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare_Workers-F38020?logo=cloudflareworkers&logoColor=white)](https://developers.cloudflare.com/workers/)
+[![Gemini API](https://img.shields.io/badge/Gemini_API-8E75B2?logo=googlegemini&logoColor=white)](https://ai.google.dev/)
+[![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.com/developers/docs/interactions/overview)
+[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+
 Discord から YouTube 動画を要約する Bot。Cloudflare Workers 上で動き、**無料枠のみで運用できる**。
 
 カードゲーム（シャドウバース）の解説・対戦動画を対象に、マリガン基準や打点計算といった
 **上達につながる情報だけを抜き出す**ようプロンプトを組んである。雑談や告知は落とす。
+
+- `/youyaku` にURLを貼るだけ。動画の区間（例: `1:20:00`〜`1:50:00`）も指定できる
+- 字幕のない動画も要約できる（動画そのものを Gemini に渡すため）
+- 各項目にタイムスタンプが付き、**クリックでその場面から再生できる**
+- 無駄なトークンを使わないよう、長すぎる動画と配信中の動画は要約前に弾く
+- サーバー不要。Workers + KV + Cron Trigger だけで完結する
+
+## 目次
+
+- [使い方](#使い方)
+- [構成](#構成)
+- [セットアップ](#セットアップ)
+- [コストと制限](#コストと制限)
+- [実測データ](#実測データ)
+- [開発](#開発)
+- [トラブルシューティング](#トラブルシューティング)
+- [ファイル構成](#ファイル構成)
 
 ## 使い方
 
@@ -25,23 +47,16 @@ Discord から YouTube 動画を要約する Bot。Cloudflare Workers 上で動�
 
 ## 構成
 
-```
-Discord ──(HTTP Interactions)──▶ Workers fetch()
-                                    │ ① Ed25519 署名検証
-                                    │ ② モーダルを開く
-                                    │ ③ 尺と配信状態を確認（YouTube Data API）
-                                    │ ④ 送信を受けて KV に積む
-                                    │ ⑤ 3秒以内に ACK →「🔄 受け付けました」
-                                    ▼
-                                   KV
-                                    ▲
-                                    │ 1分ごとに取り出す
-                          Workers scheduled()  ← Cron Trigger（実行上限15分）
-                                    │
-                                    ├─▶ Gemini generateContent（YouTube URL を直接渡す）
-                                    │
-                                    └─▶ PATCH で「受け付けました」を要約に差し替え
-```
+![youyaku-bot の構成](docs/architecture.svg)
+
+`/youyaku` を打ってから要約が届くまでの流れは次のとおり。
+
+1. Discord が Interaction を Worker に POST する
+2. `fetch()` が Ed25519 署名を検証し、入力モーダルを返す
+3. モーダルの送信を受けて、YouTube Data API で尺と配信状態を確認する（NG ならここで終了）
+4. ジョブを Workers KV に積み、「🔄 受け付けました」に差し替えて **3秒以内に ACK** を返す
+5. 毎分の Cron Trigger で `scheduled()` が起き、KV からジョブを取り出す
+6. Gemini に要約させ、元のメッセージを PATCH で要約カードに差し替える
 
 ### 要約を Cron に逃がしている理由
 
@@ -62,7 +77,16 @@ Cron Trigger は実行上限が 15 分あり、この制約を受けない。
 
 区間指定（`videoMetadata` の `startOffset` / `endOffset`）が Interactions API に未実装のため。
 
+### 尺の確認に Data API を使う理由
+
+oEmbed は動画の長さを返さない。`googleapis.com` 宛ての Data API はデータセンター IP でも
+弾かれないため、こちらから `contentDetails.duration` と `liveBroadcastContent` を取る。
+**取得に失敗した場合は尺を確認せずそのまま要約する**（外部要因でユーザーの操作を止めない方針）。
+
 ## セットアップ
+
+必要なもの: Node.js 22 以上（`npm run measure` が `--experimental-strip-types` を使う）、
+Cloudflare アカウント、Discord アカウント、Google アカウント。
 
 ### 1. Discord アプリ
 
@@ -130,6 +154,20 @@ npm run deploy
 
 保存時に Discord が署名付き PING を送るため、**署名検証が動いていないとここで保存に失敗する**。
 
+### 環境変数
+
+| 名前 | 必須 | 使う場所 | 内容 |
+| --- | --- | --- | --- |
+| `DISCORD_PUBLIC_KEY` | ✅ | Worker | 署名検証に使う公開鍵 |
+| `GEMINI_API_KEY` | ✅ | Worker | 要約と（既定では）尺チェック |
+| `YOUTUBE_API_KEY` | | Worker | 尺チェック用。未指定なら `GEMINI_API_KEY` を流用 |
+| `GEMINI_MODEL` | | Worker | 既定は `gemini-3.6-flash`（`wrangler.jsonc` の `vars`） |
+| `DISCORD_APPLICATION_ID` | ✅ | register のみ | スラッシュコマンドの登録先 |
+| `DISCORD_BOT_TOKEN` | ✅ | register のみ | 登録 API の認証 |
+| `DISCORD_GUILD_ID` | | register のみ | 指定したサーバーへ即時反映。空でグローバル登録 |
+
+Worker 側の必須 2 つは `wrangler secret put` で登録する。register 用の値は `.dev.vars` にだけあればよい。
+
 ## コストと制限
 
 | 項目 | 無料枠 | 備考 |
@@ -147,6 +185,9 @@ Gemini 自体は3時間まで扱えるが、待ち時間と枠の消費を抑え
 
 Gemini の無料枠は**入力データが学習に利用され得る**。非公開の動画を扱う用途では有償プランを検討すること。
 
+`/quota` が出す残量は **Bot 側の自前集計**。Google が残量 API を公開していないため、
+要約が成功するたびに「何秒ぶんの動画を投げたか」を KV に足している。実カウントとは差が出る。
+
 ### 429 の2種類
 
 | 種類 | 回復まで | 挙動 |
@@ -156,7 +197,9 @@ Gemini の無料枠は**入力データが学習に利用され得る**。非公
 
 長い動画は 1 回で 20 万トークンを超えるため後者に当たりやすい。区間を短く切ると通りやすい。
 
-## 実測データ（2026-08-09 / gemini-3.6-flash）
+## 実測データ
+
+2026-08-09 時点、`gemini-3.6-flash`。
 
 | 動画 | 所要 | 入力トークン |
 | --- | --- | --- |
@@ -183,7 +226,7 @@ npx wrangler tail  # 本番ログ
 ```
 
 `measure` は Worker と同じ `src/gemini.ts` を読み込むため、結果が本番の挙動と一致する。
-Discord を経由しないので `GEMINI_API_KEY` だけで動く。
+Discord を経由しないので `GEMINI_API_KEY` だけで動く。プロンプトを触ったときはこれで確認する。
 
 Cron は待たずに手動発火できる。
 
@@ -191,6 +234,17 @@ Cron は待たずに手動発火できる。
 npx wrangler dev --test-scheduled
 curl "http://localhost:8787/__scheduled"
 ```
+
+## トラブルシューティング
+
+| 症状 | 原因と対処 |
+| --- | --- |
+| エンドポイントURL の保存に失敗する | 署名検証が通っていない。`DISCORD_PUBLIC_KEY` が **PUBLIC KEY**（Bot Token ではない）か、デプロイ済みかを確認する |
+| `/youyaku` が候補に出ない | `npm run register` が未実行。グローバル登録は反映に最大1時間かかるので、`DISCORD_GUILD_ID` を指定して登録し直す |
+| 「🔄 受け付けました」から変わらない | Cron が動いていない。`wrangler.jsonc` の `triggers.crons` と `npx wrangler tail` を確認する。15分を過ぎると interaction token が失効し、ジョブは破棄される |
+| 1時間超の動画が弾かれない | YouTube Data API v3 が有効化されていない。ログに `youtube data api failed status=` が出る |
+| 「この動画にアクセスできませんでした」 | 年齢制限・埋め込み無効・地域制限・限定公開のいずれか。Gemini 側から動画を取得できていない |
+| レート制限で失敗する | [429 の2種類](#429-の2種類)を参照。区間を短く切ると通りやすい |
 
 ## ファイル構成
 
@@ -205,3 +259,4 @@ curl "http://localhost:8787/__scheduled"
 | `src/discord.ts` | Ed25519 検証、モーダル値の読み取り、follow-up 送信、embed 分割 |
 | `scripts/register.mjs` | スラッシュコマンド登録 |
 | `scripts/measure.mjs` | 要約レイテンシの実測 |
+| `docs/architecture.svg` | 構成図 |

@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="680" viewBox="0 0 1040 680"
+     font-family="-apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Noto Sans JP', 'Yu Gothic', sans-serif"
+     role="img" aria-label="youyaku-bot の構成図">
+  <title>youyaku-bot の構成</title>
+  <desc>Discord の Interaction を Cloudflare Workers の fetch() が受け取り、YouTube Data API で尺を確認して Workers KV にジョブを積む。Cron Trigger で起きる scheduled() が KV から取り出し、Gemini API で要約して Discord のメッセージを更新する。</desc>
+
+  <defs>
+    <symbol id="logo-discord" viewBox="0 0 24 24">
+      <path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z"/>
+    </symbol>
+    <symbol id="logo-cloudflare" viewBox="0 0 24 24">
+      <path d="M16.5088 16.8447c.1475-.5068.0908-.9707-.1553-1.3154-.2246-.3164-.6045-.499-1.0615-.5205l-8.6592-.1123a.1559.1559 0 0 1-.1333-.0713c-.0283-.042-.0351-.0986-.021-.1553.0278-.084.1123-.1484.2036-.1562l8.7359-.1123c1.0351-.0489 2.1601-.8868 2.5537-1.9136l.499-1.3013c.0215-.0561.0293-.1128.0147-.168-.5625-2.5463-2.835-4.4453-5.5499-4.4453-2.5039 0-4.6284 1.6177-5.3876 3.8614-.4927-.3658-1.1187-.5625-1.794-.499-1.2026.119-2.1665 1.083-2.2861 2.2856-.0283.31-.0069.6128.0635.894C1.5683 13.171 0 14.7754 0 16.752c0 .1748.0142.3515.0352.5273.0141.083.0844.1475.1689.1475h15.9814c.0909 0 .1758-.0645.2032-.1553l.12-.4268zm2.7568-5.5634c-.0771 0-.1611 0-.2383.0112-.0566 0-.1054.0415-.127.0976l-.3378 1.1744c-.1475.5068-.0918.9707.1543 1.3164.2256.3164.6055.498 1.0625.5195l1.8437.1133c.0557 0 .1055.0263.1329.0703.0283.043.0351.1074.0214.1562-.0283.084-.1132.1485-.204.1553l-1.921.1123c-1.041.0488-2.1582.8867-2.5527 1.914l-.1406.3585c-.0283.0713.0215.1416.0986.1416h6.5977c.0771 0 .1474-.0489.169-.126.1122-.4082.1757-.837.1757-1.2803 0-2.6025-2.125-4.727-4.7344-4.727"/>
+    </symbol>
+    <symbol id="logo-gemini" viewBox="0 0 24 24">
+      <path d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81"/>
+    </symbol>
+    <symbol id="logo-youtube" viewBox="0 0 24 24">
+      <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+    </symbol>
+
+    <linearGradient id="gemini-gradient" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#4285F4"/>
+      <stop offset="52%" stop-color="#9B72CB"/>
+      <stop offset="100%" stop-color="#D96570"/>
+    </linearGradient>
+
+    <marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#8C959F"/>
+    </marker>
+  </defs>
+
+  <rect x="0.5" y="0.5" width="1039" height="679" rx="18" fill="#FBFBFD" stroke="#E5E7EB"/>
+
+  <!-- タイトル -->
+  <text x="32" y="62" font-size="16" font-weight="700" fill="#1F2328">youyaku-bot</text>
+  <text x="32" y="84" font-size="11.5" fill="#656D76">Discord から YouTube 動画を要約する</text>
+
+  <!-- Discord -->
+  <rect x="32" y="118" width="196" height="134" rx="14" fill="#FFFFFF" stroke="#D8DEE4"/>
+  <use href="#logo-discord" x="56" y="140" width="26" height="26" fill="#5865F2"/>
+  <text x="92" y="159" font-size="16" font-weight="700" fill="#1F2328">Discord</text>
+  <rect x="55" y="182" width="80" height="24" rx="7" fill="#F2F3F5"/>
+  <text x="65" y="198" font-size="12.5" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#1F2328">/youyaku</text>
+  <text x="56" y="224" font-size="11" fill="#656D76">モーダルで URL と</text>
+  <text x="56" y="240" font-size="11" fill="#656D76">区間（任意）を入力</text>
+
+  <!-- Discord → Workers -->
+  <line x1="228" y1="152" x2="332" y2="152" stroke="#8C959F" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="280" y="144" font-size="11" fill="#656D76" text-anchor="middle">Interaction</text>
+  <line x1="332" y1="208" x2="232" y2="208" stroke="#8C959F" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+  <text x="282" y="200" font-size="11" fill="#656D76" text-anchor="middle">3秒以内に ACK</text>
+
+  <!-- Cloudflare Workers -->
+  <rect x="340" y="48" width="420" height="560" rx="18" fill="#FFF9F4" stroke="#F5C79E"/>
+  <use href="#logo-cloudflare" x="362" y="64" width="26" height="26" fill="#F38020"/>
+  <text x="398" y="84" font-size="15" font-weight="700" fill="#1F2328">Cloudflare Workers</text>
+
+  <!-- fetch() -->
+  <rect x="364" y="114" width="372" height="200" rx="12" fill="#FFFFFF" stroke="#D8DEE4"/>
+  <text x="386" y="143" font-size="14" font-weight="700" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#1F2328">fetch()</text>
+  <rect x="606" y="126" width="110" height="22" rx="11" fill="#EEF0F3"/>
+  <text x="661" y="141" font-size="10" fill="#656D76" text-anchor="middle">HTTP Interactions</text>
+  <g font-size="12.5" fill="#1F2328">
+    <text x="386" y="178"><tspan fill="#E06A0B">①</tspan> Ed25519 で署名を検証</text>
+    <text x="386" y="206"><tspan fill="#E06A0B">②</tspan> 入力モーダルを開く</text>
+    <text x="386" y="234"><tspan fill="#E06A0B">③</tspan> 尺と配信状態を確認</text>
+    <text x="386" y="262"><tspan fill="#E06A0B">④</tspan> ジョブを KV に積む</text>
+    <text x="386" y="290"><tspan fill="#E06A0B">⑤</tspan> 受付表示に差し替えて ACK</text>
+  </g>
+
+  <!-- fetch() → KV -->
+  <line x1="550" y1="314" x2="550" y2="344" stroke="#8C959F" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="562" y="334" font-size="10.5" fill="#656D76">④ enqueue</text>
+
+  <!-- KV -->
+  <rect x="430" y="346" width="240" height="64" rx="12" fill="#FFFFFF" stroke="#D8DEE4"/>
+  <text x="452" y="374" font-size="13" font-weight="700" fill="#1F2328">Workers KV — JOBS</text>
+  <text x="452" y="395" font-size="10.5" fill="#656D76">要約待ちのジョブを保持（TTL 1時間）</text>
+
+  <!-- KV → scheduled() -->
+  <line x1="550" y1="410" x2="550" y2="440" stroke="#8C959F" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="562" y="430" font-size="10.5" fill="#656D76">1分ごとに取り出す</text>
+
+  <!-- scheduled() -->
+  <rect x="364" y="442" width="372" height="140" rx="12" fill="#FFFFFF" stroke="#D8DEE4"/>
+  <text x="386" y="471" font-size="14" font-weight="700" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#1F2328">scheduled()</text>
+  <rect x="584" y="454" width="132" height="22" rx="11" fill="#FFF1E6"/>
+  <text x="650" y="469" font-size="10" fill="#B35309" text-anchor="middle">Cron Trigger・毎分</text>
+  <g font-size="12.5" fill="#1F2328">
+    <text x="386" y="506">・KV から最大3件を取り出す</text>
+    <text x="386" y="532">・Gemini に要約させる（最大8分）</text>
+    <text x="386" y="558">・元のメッセージを PATCH で更新</text>
+  </g>
+
+  <!-- Workers → YouTube Data API -->
+  <line x1="760" y1="168" x2="856" y2="168" stroke="#8C959F" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="808" y="160" font-size="11" fill="#656D76" text-anchor="middle">尺の確認</text>
+
+  <rect x="860" y="126" width="150" height="96" rx="12" fill="#FFFFFF" stroke="#D8DEE4"/>
+  <use href="#logo-youtube" x="880" y="144" width="26" height="26" fill="#FF0000"/>
+  <text x="914" y="163" font-size="13" font-weight="700" fill="#1F2328">YouTube</text>
+  <text x="880" y="192" font-size="11" fill="#1F2328">Data API v3</text>
+  <text x="880" y="209" font-size="10.5" fill="#656D76">長さ・配信中かどうか</text>
+
+  <!-- Workers → Gemini -->
+  <line x1="760" y1="500" x2="856" y2="500" stroke="#8C959F" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="808" y="492" font-size="11" fill="#656D76" text-anchor="middle">要約リクエスト</text>
+
+  <rect x="860" y="452" width="150" height="110" rx="12" fill="#FFFFFF" stroke="#D8DEE4"/>
+  <use href="#logo-gemini" x="880" y="470" width="26" height="26" fill="url(#gemini-gradient)"/>
+  <text x="914" y="489" font-size="13" font-weight="700" fill="#1F2328">Gemini</text>
+  <text x="880" y="518" font-size="11" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#1F2328">generateContent</text>
+  <text x="880" y="536" font-size="10.5" fill="#656D76">動画 URL を直接渡す</text>
+  <text x="880" y="552" font-size="10.5" fill="#656D76">（字幕は取りに行かない）</text>
+
+  <!-- scheduled() → Discord（要約の返信） -->
+  <path d="M450 582 L450 636 L130 636 L130 256" fill="none" stroke="#8C959F" stroke-width="1.6"
+        stroke-dasharray="5 4" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <text x="292" y="628" font-size="11" fill="#656D76" text-anchor="middle">要約カードに差し替え（PATCH）</text>
+</svg>
