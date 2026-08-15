@@ -73,9 +73,14 @@ if (!apiKey) {
   console.error("GEMINI_API_KEY が未設定です。.dev.vars に設定してください（.dev.vars.example 参照）。");
   process.exit(1);
 }
-const model = process.env.GEMINI_MODEL?.trim() || "gemini-3.6-flash";
+// 本番と同じくカンマ区切りで複数指定できる。前から順に試す。
+const models = (process.env.GEMINI_MODEL ?? "")
+  .split(",")
+  .map((model) => model.trim())
+  .filter(Boolean);
+if (models.length === 0) models.push("gemini-3.6-flash", "gemini-3.5-flash");
 
-console.log(`model: ${model}`);
+console.log(`model: ${models.join(", ")}`);
 if (clip) {
   const end = clip.endSeconds !== undefined ? formatSeconds(clip.endSeconds) : "最後";
   console.log(`区間: ${formatSeconds(clip.startSeconds)} 〜 ${end}`);
@@ -100,7 +105,7 @@ for (const rawUrl of urls) {
     try {
       const { text, usage } = await summarizeYouTube({
         apiKey,
-        model,
+        models,
         url,
         clip,
         signal: controller.signal,

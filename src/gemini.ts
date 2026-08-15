@@ -67,7 +67,16 @@ export interface Usage {
 
 export interface SummaryResult {
   text: string;
+  /** 実際に要約したモデル。候補の何番目が通ったかをログに残すために返す。 */
+  model: string;
   usage?: Usage;
+}
+
+export interface GeminiErrorInit {
+  retryable?: boolean;
+  retryAfterMs?: number;
+  status?: number;
+  detail?: string;
 }
 
 export class GeminiError extends Error {
@@ -75,24 +84,44 @@ export class GeminiError extends Error {
   readonly retryable: boolean;
   /** API が待機時間を指定してきた場合はそれに従う。 */
   readonly retryAfterMs?: number;
+  /** Gemini が返した HTTP ステータス。ネットワーク層で失敗した場合は無い。 */
+  readonly status?: number;
+  /** API が返した生のエラー本文。ユーザー向けに丸める前のもの。 */
+  readonly detail?: string;
 
-  constructor(message: string, retryable = false, retryAfterMs?: number) {
+  constructor(message: string, init: GeminiErrorInit = {}) {
     super(message);
-    this.retryable = retryable;
-    this.retryAfterMs = retryAfterMs;
+    this.retryable = init.retryable ?? false;
+    this.retryAfterMs = init.retryAfterMs;
+    this.status = init.status;
+    this.detail = init.detail;
+  }
+
+  /**
+   * ログ用の1行。
+   * ユーザー向けの文言は 503 も 500 も「混雑しています」に丸めてしまうため、
+   * 後から原因を追えるように生の情報をこの形で残す。
+   */
+  get logLine(): string {
+    return `status=${this.status ?? "-"} retryable=${this.retryable} detail=${this.detail ?? "-"}`;
   }
 }
 
 /**
- * 一時エラー時の試行回数と、その間隔（回を追うごとに伸ばす）。
- * 待ち時間の合計は 20+40+60 = 120 秒。Cron の実行枠 15 分に対して十分収まる。
+ * 全モデルが混んでいた場合に、時間をおいて試し直す回数と間隔。
+ * 待ち時間の合計は 30+60+90 = 180 秒。実測では隣のモデルが空いていることが多く、
+ * ここまで待たずに済むことがほとんど。
  */
-const MAX_ATTEMPTS = 4;
-const RETRY_BASE_DELAY_MS = 20_000;
+const MAX_ROUNDS = 4;
+const RETRY_BASE_DELAY_MS = 30_000;
 
 export interface SummarizeOptions {
   apiKey: string;
-  model: string;
+  /**
+   * 候補モデル。先頭から順に試す。
+   * 混雑（503）はモデル単位で起きるため、1つが混んでいても隣が空いていることが多い。
+   */
+  models: string[];
   url: string;
   signal: AbortSignal;
   /** 未指定なら動画全体。 */
@@ -116,21 +145,46 @@ interface ErrorDetail {
 }
 
 /**
- * 混雑エラー（`high demand`）は実際に発生するため、時間をおいて再試行する。
- * Cron 側の実行枠は 15 分あり、数十秒の待機は許容できる。
+ * 混雑エラー（`high demand`）は実際に発生する。しかもモデル単位で起きるため、
+ * まず候補モデルを順に試し、**全部が混んでいた場合だけ**時間をおいて最初から試し直す。
+ * 待つより隣のモデルに移るほうが速いので、モデル間の移動に待機は挟まない。
+ *
+ * Cron 側の実行枠は 15 分あり、この程度の待機は許容できる。
+ * 上限は呼び出し側の AbortSignal（トークンの残り寿命と 8 分の短いほう）で押さえる。
  */
 export async function summarizeYouTube(options: SummarizeOptions): Promise<SummaryResult> {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return await requestSummary(options);
-    } catch (error) {
-      const retryable = error instanceof GeminiError && error.retryable;
-      if (!retryable || attempt >= MAX_ATTEMPTS) throw error;
+  for (let round = 1; ; round++) {
+    // このラウンドで最後に出た混雑エラー。全モデルが駄目だったときの待機判断に使う。
+    let busy: GeminiError | undefined;
 
-      const wait = error.retryAfterMs ?? RETRY_BASE_DELAY_MS * attempt;
-      console.warn(`gemini busy, retrying in ${wait}ms (attempt ${attempt}/${MAX_ATTEMPTS})`);
-      await delay(wait, options.signal);
+    for (const model of options.models) {
+      try {
+        return await requestSummary(model, options);
+      } catch (error) {
+        // モデル名が通らない場合は待っても直らない。次の候補へすぐ移る。
+        if (error instanceof GeminiError && error.status === 404) {
+          console.warn(`model unavailable model=${model} ${error.logLine}`);
+          continue;
+        }
+        // 動画側の問題（非公開・地域制限など）はどのモデルでも同じ結果になる。
+        if (!(error instanceof GeminiError) || !error.retryable) throw error;
+
+        console.warn(`gemini busy model=${model} ${error.logLine}`);
+        busy = error;
+      }
     }
+
+    // 混雑が理由でないなら、候補がすべて 404 だったということ。
+    if (!busy) {
+      throw new GeminiError(
+        "要約に使えるモデルがありませんでした。`GEMINI_MODEL` の設定を確認してください。",
+      );
+    }
+    if (round >= MAX_ROUNDS) throw busy;
+
+    const wait = busy.retryAfterMs ?? RETRY_BASE_DELAY_MS * round;
+    console.warn(`all models busy, retrying in ${wait}ms (round ${round}/${MAX_ROUNDS})`);
+    await delay(wait, options.signal);
   }
 }
 
@@ -149,8 +203,8 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-async function requestSummary(options: SummarizeOptions): Promise<SummaryResult> {
-  const { apiKey, model, url, signal, clip } = options;
+async function requestSummary(model: string, options: SummarizeOptions): Promise<SummaryResult> {
+  const { apiKey, url, signal, clip } = options;
 
   const videoMetadata: Record<string, string> = {};
   if (clip) {
@@ -193,11 +247,12 @@ async function requestSummary(options: SummarizeOptions): Promise<SummaryResult>
     const detail = body.error?.message ?? `HTTP ${res.status}`;
     const details = body.error?.details ?? [];
     const perDay = isPerDayQuota(details);
-    throw new GeminiError(
-      mapErrorMessage(res.status, detail, perDay),
-      isRetryable(res.status, detail, perDay),
-      retryAfterMs(details),
-    );
+    throw new GeminiError(mapErrorMessage(res.status, detail, perDay), {
+      retryable: isRetryable(res.status, detail, perDay),
+      retryAfterMs: retryAfterMs(details),
+      status: res.status,
+      detail,
+    });
   }
 
   const text = (body.candidates?.[0]?.content?.parts ?? [])
@@ -214,6 +269,7 @@ async function requestSummary(options: SummarizeOptions): Promise<SummaryResult>
   return {
     // タイムスタンプをその時点から再生できるリンクにしておく。
     text: linkifyTimestamps(text, url),
+    model,
     usage: {
       inputTokens: body.usageMetadata?.promptTokenCount,
       outputTokens: body.usageMetadata?.candidatesTokenCount,
@@ -277,7 +333,12 @@ function mapErrorMessage(status: number, detail: string, perDay = false): string
     return "この動画を処理できませんでした。限定公開・非公開の動画は対象外です。";
   }
   if (isRetryable(status, detail, perDay)) {
-    return "Gemini が混雑しており、再試行しても応答が得られませんでした。時間をおいて試してください。";
+    // 混雑時は重いリクエストから順に落とされるため、区間を短くすると同じ時間帯でも通る。
+    return [
+      "Gemini が混雑しており、候補のモデルをすべて試しても応答が得られませんでした。",
+      "区間を短く（20分以内が目安）区切ると、混雑中でも通りやすくなります。",
+      "それでも駄目な場合は時間をおいて実行してください。",
+    ].join("\n");
   }
   return `要約に失敗しました（${detail}）`;
 }

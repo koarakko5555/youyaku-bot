@@ -36,11 +36,17 @@ export interface Env {
    * その場合は尺を確認せずそのまま要約する。
    */
   YOUTUBE_API_KEY?: string;
+  /** カンマ区切りで複数指定できる。前から順に試す。未指定なら DEFAULT_MODELS。 */
   GEMINI_MODEL?: string;
   JOBS: KVNamespace;
 }
 
-const DEFAULT_MODEL = "gemini-3.6-flash";
+/**
+ * 候補モデル。前から順に試す。
+ * 混雑（503）はモデル単位で起きるため、1つ混んでいても隣が空いていることが多い。
+ * 実測（2026-08-14 の混雑時）では 3.7 系が全滅する一方で 3.5 系は通っていた。
+ */
+const DEFAULT_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash"];
 
 /**
  * 1 回の Cron で処理するジョブ数。
@@ -89,12 +95,12 @@ const SUMMARY_MODAL = {
     {
       type: ComponentType.LABEL,
       label: "開始時刻（任意）",
-      description: "省略すると動画の先頭から。例: 0:00 / 1:23:45 / 90m",
+      description: "省略すると動画の先頭から。例: 1:23:45 / 1h30m / 90m / 5400s",
       component: {
         type: ComponentType.TEXT_INPUT,
         custom_id: "from",
         style: TextInputStyle.SHORT,
-        placeholder: "0:00",
+        placeholder: "1:00:00（または 1h）",
         required: false,
         max_length: 20,
       },
@@ -102,12 +108,12 @@ const SUMMARY_MODAL = {
     {
       type: ComponentType.LABEL,
       label: "終了時刻（任意）",
-      description: "省略すると動画の最後まで。区間は最大1時間",
+      description: "省略すると動画の最後まで。区間は最大1時間（例: 1h → 2h）",
       component: {
         type: ComponentType.TEXT_INPUT,
         custom_id: "to",
         style: TextInputStyle.SHORT,
-        placeholder: "2:00:00",
+        placeholder: "2:00:00（または 2h）",
         required: false,
         max_length: 20,
       },
@@ -209,16 +215,16 @@ async function runSummary(job: SummaryJob, env: Env): Promise<void> {
   const startedAt = Date.now();
 
   try {
-    const { text: summary, usage } = await summarizeYouTube({
+    const { text: summary, model, usage } = await summarizeYouTube({
       apiKey: env.GEMINI_API_KEY,
-      model: env.GEMINI_MODEL ?? DEFAULT_MODEL,
+      models: parseModels(env.GEMINI_MODEL),
       url: job.url,
       clip: job.clip,
       signal: controller.signal,
     });
 
     console.log(
-      `summary ok elapsed=${Date.now() - startedAt}ms queued=${startedAt - job.createdAt}ms input_tokens=${usage?.inputTokens ?? "?"} url=${job.url}`,
+      `summary ok model=${model} elapsed=${Date.now() - startedAt}ms queued=${startedAt - job.createdAt}ms input_tokens=${usage?.inputTokens ?? "?"} url=${job.url}`,
     );
 
     await addUsage(env.JOBS, consumedSeconds(job, usage));
@@ -261,11 +267,28 @@ async function runSummary(job: SummaryJob, env: Env): Promise<void> {
           ? "要約が時間内に終わりませんでした。動画が長すぎる可能性があります。"
           : "予期しないエラーが発生しました。";
 
-    console.error(`summary failed elapsed=${Date.now() - startedAt}ms url=${job.url}`, error);
+    // ユーザーに出す文言は原因を丸めてしまうので、ログには Gemini の生の応答を残す。
+    const diagnosis = error instanceof GeminiError ? error.logLine : `error=${String(error)}`;
+    console.error(
+      `summary failed elapsed=${Date.now() - startedAt}ms url=${job.url} ${diagnosis}`,
+      error,
+    );
     await editOriginalResponse(job.applicationId, job.token, { content: `⚠️ ${message}` });
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * `GEMINI_MODEL` はカンマ区切りで複数指定できる。書かれた順に試す。
+ * 空や未設定なら既定の候補を使う。
+ */
+function parseModels(raw?: string): string[] {
+  const models = (raw ?? "")
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean);
+  return models.length > 0 ? models : DEFAULT_MODELS;
 }
 
 /**
@@ -366,14 +389,14 @@ function buildClip(from?: string, to?: string): ClipRange | undefined | string {
 
   const startSeconds = from === undefined ? 0 : parseTimecode(from);
   if (startSeconds === null) {
-    return `開始時刻「${from}」を解釈できませんでした。\`1:23:45\` \`12:34\` \`90m\` のような形式で指定してください。`;
+    return `開始時刻「${from}」を解釈できませんでした。\`1:23:45\` \`12:34\` \`1h30m\` \`90m\` のような形式で指定してください。`;
   }
 
   let endSeconds: number | undefined;
   if (to !== undefined) {
     const parsed = parseTimecode(to);
     if (parsed === null) {
-      return `終了時刻「${to}」を解釈できませんでした。\`1:23:45\` \`12:34\` \`90m\` のような形式で指定してください。`;
+      return `終了時刻「${to}」を解釈できませんでした。\`1:23:45\` \`12:34\` \`1h30m\` \`90m\` のような形式で指定してください。`;
     }
     endSeconds = parsed;
   }

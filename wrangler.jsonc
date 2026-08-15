@@ -18,7 +18,9 @@
   ],
   "vars": {
     // 変更したい場合のみ上書き。secret ではないのでここに書いてよい。
-    "GEMINI_MODEL": "gemini-3.6-flash"
+    // カンマ区切りで前から順に試す。混雑（503）はモデル単位で起きるため、
+    // 1 つが混んでいても隣が空いていることが多い。
+    "GEMINI_MODEL": "gemini-3.6-flash,gemini-3.5-flash"
   }
   // secrets（wrangler secret put で登録、ここには書かない）:
   //   DISCORD_PUBLIC_KEY
