@@ -70,7 +70,7 @@ Discord から YouTube 動画を要約する Bot。Cloudflare Workers 上で動�
 2. `fetch()` が Ed25519 署名を検証し、入力モーダルを返す
 3. モーダルの送信を受けて、YouTube Data API で尺と配信状態を確認する（NG ならここで終了）
 4. ジョブを Workers KV に積み、「🔄 受け付けました」に差し替えて **3秒以内に ACK** を返す
-5. 毎分の Cron Trigger で `scheduled()` が起き、KV からジョブを取り出す
+5. 毎分の Cron Trigger で `scheduled()` が起き、番兵キーを見てジョブがあれば KV から取り出す
 6. Gemini に要約させ、元のメッセージを PATCH で要約カードに差し替える
 
 ### 要約を Cron に逃がしている理由
@@ -80,6 +80,19 @@ Discord から YouTube 動画を要約する Bot。Cloudflare Workers 上で動�
 Cron Trigger は実行上限が 15 分あり、この制約を受けない。
 
 代償として、Cron の最小間隔が 1 分なので**最大 60 秒の待ちが上乗せ**される。
+番兵キー（後述）の伝播を含めても、投入から拾い上げまでの遅れは最悪 2 分強に収まる。
+
+### 毎分の Cron が KV を list しない理由
+
+KV の無料枠は**アカウント単位の合算**で、list と write が 1,000/日、read が 100,000/日と桁が違う。
+Cron は毎分（1,440 回/日）起きるので、キューが空でも list する実装だと
+**ジョブが 1 件も無い日でも list の枠を必ず使い切り**、同じアカウントの他の Worker まで巻き添えにする。
+list を write に置き換えても write が同じ 1,000/日 なので詰む。
+
+そこで `enqueueJob()` はジョブ本体に加えて番兵キー `queue:pending` を TTL 5 分で置き、
+`claimJobs()` はまず `kv.get()` でそれを確認して、無ければ list せずに帰る。
+毎分やるのは read だけになり、空の日の list は 0 回、ジョブがある日でも 1 件あたり数回で済む。
+詳しい理由と見積もりは `src/jobs.ts` の冒頭コメントにある。
 
 ### 字幕スクレイピングをしない理由
 
@@ -190,7 +203,10 @@ Worker 側の必須 2 つは `wrangler secret put` で登録する。register �
 | Workers リクエスト | 10万/日 | 個人利用なら十分 |
 | Workers CPU 時間 | 10ms/呼び出し | `fetch()` の待ち時間は加算されない |
 | Cron Trigger 実行時間 | 15分 | 要約の実質的な上限 |
-| KV 書き込み | 1,000/日 | 1 リクエストにつき数回 |
+| KV 読み取り | 100,000/日 | 毎分の Cron が番兵キーを見るので 1,440/日 を常時使う |
+| KV 書き込み | 1,000/日 | 要約 1 件につき 3 回（ジョブ + 番兵 + 消費記録） |
+| KV list | 1,000/日 | 番兵があるときだけ。空の日は 0 回 |
+| KV 削除 | 1,000/日 | 要約 1 件につき 1 回 |
 | Gemini 動画 | 8時間/日 | 公開動画のみ |
 | Gemini 1リクエスト | 3時間 | 低解像度時。コンテキスト1Mによる制約 |
 | YouTube Data API | 10,000ユニット/日 | 尺の確認は1回1ユニット。実質無制限 |
@@ -264,13 +280,21 @@ npx wrangler dev --test-scheduled
 curl "http://localhost:8787/__scheduled"
 ```
 
+番兵キー `queue:pending` が無いと `claimJobs()` は list せずに即座に帰る。
+手で発火しても何も起きない場合は、まず番兵の有無を確認する。
+
+```bash
+npx wrangler kv key get queue:pending --binding JOBS --remote
+npx wrangler kv key list --binding JOBS --remote --prefix job:
+```
+
 ## トラブルシューティング
 
 | 症状 | 原因と対処 |
 | --- | --- |
 | エンドポイントURL の保存に失敗する | 署名検証が通っていない。`DISCORD_PUBLIC_KEY` が **PUBLIC KEY**（Bot Token ではない）か、デプロイ済みかを確認する |
 | `/youyaku` が候補に出ない | `npm run register` が未実行。グローバル登録は反映に最大1時間かかるので、`DISCORD_GUILD_ID` を指定して登録し直す |
-| 「🔄 受け付けました」から変わらない | Cron が動いていない。`wrangler.jsonc` の `triggers.crons` と `npx wrangler tail` を確認する。15分を過ぎると interaction token が失効し、ジョブは破棄される |
+| 「🔄 受け付けました」から変わらない | Cron が動いていない。`wrangler.jsonc` の `triggers.crons` と `npx wrangler tail` を確認する。番兵キー `queue:pending` が消えていてもジョブは拾われない（KV の枠切れで put が失敗した場合など）。15分を過ぎると interaction token が失効し、ジョブは破棄される |
 | 1時間超の動画が弾かれない | YouTube Data API v3 が有効化されていない。ログに `youtube data api failed status=` が出る |
 | 「この動画にアクセスできませんでした」 | 年齢制限・埋め込み無効・地域制限・限定公開のいずれか。Gemini 側から動画を取得できていない |
 | レート制限で失敗する | [429 の2種類](#429-の2種類)を参照。区間を短く切ると通りやすい |
@@ -282,7 +306,7 @@ curl "http://localhost:8787/__scheduled"
 | --- | --- |
 | `src/index.ts` | `fetch()`（署名検証 → モーダル → ジョブ投入）と `scheduled()`（要約実行） |
 | `src/gemini.ts` | Gemini 呼び出し、プロンプト、再試行、エラー文言の変換 |
-| `src/jobs.ts` | KV を使ったジョブの積み下ろしと、失効ジョブの破棄 |
+| `src/jobs.ts` | KV を使ったジョブの積み下ろし、番兵キーによる list の抑制、失効ジョブの破棄 |
 | `src/quota.ts` | 無料枠の消費を日次で記録（Google は残量 API を出していないため自前集計） |
 | `src/timecode.ts` | `1:23:45` `90m` などの時刻解釈と区間の検証、長さの上限 |
 | `src/youtube.ts` | URL の正規化、タイムスタンプのリンク化、サムネイルと尺の取得 |
